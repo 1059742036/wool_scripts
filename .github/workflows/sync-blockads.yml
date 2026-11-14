@@ -1,0 +1,58 @@
+name: Sync BlockAds (finance-excluded)
+
+on:
+  schedule:
+    - cron: "23 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-blockads
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch upstream module
+        run: |
+          mkdir -p build
+          URL_RAW="https://raw.githubusercontent.com/fmz200/wool_scripts/main/Surge/module/blockAds.module"
+          URL_CDN="https://cdn.jsdelivr.net/gh/fmz200/wool_scripts@main/Surge/module/blockAds.module"
+          if ! curl -fsSL --retry 3 --retry-delay 5 --max-time 90 "$URL_RAW" -o build/blockAds.raw.module; then
+            echo "raw.githubusercontent 失败，改用 jsdelivr"
+            curl -fsSL --retry 3 --retry-delay 5 --max-time 90 "$URL_CDN" -o build/blockAds.raw.module
+          fi
+          echo "上游大小: $(stat -c%s build/blockAds.raw.module) 字节"
+
+      - name: Filter finance domains
+        run: python3 scripts/filter_blockads.py build/blockAds.raw.module build/blockAds.module
+
+      - name: Sanity check
+        run: |
+          SIZE=$(stat -c%s build/blockAds.module)
+          echo "产物大小: $SIZE 字节"
+          if [ "$SIZE" -lt 300000 ]; then
+            echo "产物异常偏小，中止发布"
+            exit 1
+          fi
+          grep -c '^\[MITM\]$' build/blockAds.module
+          grep -q '^hostname' build/blockAds.module
+
+      - name: Publish to dist branch
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          cd build
+          git init -q -b dist
+          git add blockAds.module
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "blockAds $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" dist
+          echo "已发布: https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/dist/blockAds.module"
